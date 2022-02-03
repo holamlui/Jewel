@@ -1,0 +1,671 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>Jewel 1.1 Beta</title>
+<script type='text/javascript' >
+window.onload = function() {
+    // Get the canvas and context
+    var canvas = document.getElementById("viewport");
+    var context = canvas.getContext("2d");   
+    // Timing and frames per second
+    var lastframe = 0;
+    var fpstime = 0;
+    var framecount = 0;
+    var timer;      
+    // Level object
+    var level = {
+        x: 250,         // X position
+        y: 113,         // Y position
+        columns: 8,     // Number of tile columns
+        rows: 8,        // Number of tile rows
+        tilewidth: 48,  // Visual width of a tile
+        tileheight: 48, // Visual height of a tile
+        tiles: [],      // The two-dimensional tile array
+        selectedtile: { selected: false, column: 0, row: 0 }
+    };   
+    var jewel = [[0,   0, 124, 120],   //image offset coordinates
+                 [124, 0, 124, 120],
+                 [248, 0, 124, 120],
+                 [372, 0, 124, 120],
+                 [496, 0, 124, 120],
+                 [620, 0, 124, 120],
+                 [744, 0, 124, 120]
+				];   
+    // Clusters and moves that were found
+    var clusters = [];  // { column, row, length, horizontal }
+    var moves = [];     // { column1, row1, column2, row2 }
+    // Current move
+    var currentmove = { column1: 0, row1: 0, column2: 0, row2: 0 };    
+    // Game states
+    var gamestates = { init: 0, ready: 1, resolve: 2 };
+    var gamestate = gamestates.init;  
+    // Score
+    var score = 0;
+    // Create new img element
+	var img = new Image();   
+	img.src = 'img/1.png';
+	var clearaudio = new Audio('sfx/clear.wav');
+	
+    // Animation variables
+    var animationstate = 0;
+    var animationtime = 0;
+    var animationtimetotal = 0.3;  
+    // Game Over 
+    var gameover = false;
+    // No More Move
+	var nomove = false;
+	// Board Size
+	var boardsize = 8;
+	var timelimit = 15;
+	var timeleft = timelimit;
+    // GUI buttons
+    var buttons = [ { x: 30, y: 300, width: 200, height: 50, text: "New Game"},
+					{ x: 30, y: 360, width: 200, height: 50, text: "TimeLimit: 15s"},
+					{ x: 30, y: 420, width: 200, height: 50, text: "Difficulty: 8x8"},					
+					];
+    canvas.addEventListener("mousedown", onMouseDown); 
+    // Main loop
+    function main(tframe) {
+        // Request animation frames
+        window.requestAnimationFrame(main);      
+        // Update and render the game
+        update(tframe);
+        render();		
+    }     
+    function update(tframe) {// Update the game state
+        var dt = (tframe - lastframe) / 1000;
+        lastframe = tframe;               
+        if (gamestate == gamestates.ready) {       
+            // Check if no more move
+            if(moves.length <= 0) {
+                nomove = true;
+            }
+			// Check if time count to 0
+			if(timeleft==0){
+				gameover = true;
+			}
+        } else if (gamestate == gamestates.resolve) {
+            // Game is busy resolving and animating clusters
+            animationtime += dt;            
+            if (animationstate == 0) {
+                // Clusters need to be found and removed
+                if (animationtime > animationtimetotal) {
+                    // Find clusters
+                    findClusters();                  
+                    if (clusters.length > 0) {
+                        // Add points to the score
+                        for (var i=0; i<clusters.length; i++) {
+                            // Add extra points for longer clusters
+							clearaudio.play();//sfx
+                            score += 100 * (clusters[i].length - 2);;							
+                        }                   
+                        // Clusters found, remove them
+                        removeClusters();                      
+                        // Tiles need to be shifted
+                        animationstate = 1;
+                    } else {
+                        // No clusters found, animation complete
+                        gamestate = gamestates.ready;
+                    }
+                    animationtime = 0;
+                }
+            } else if (animationstate == 1) {
+                // Tiles need to be shifted
+                if (animationtime > animationtimetotal) {
+                    // Shift tiles
+                    shiftTiles();                   
+                    // New clusters need to be found
+                    animationstate = 0;
+                    animationtime = 0;
+                    
+                    // Check if there are new clusters
+                    findClusters();
+                    if (clusters.length <= 0) {
+                        // Animation complete
+                        gamestate = gamestates.ready;
+                    }
+                }
+            } else if (animationstate == 2) {
+                // Swapping tiles animation				
+                if (animationtime > animationtimetotal) {
+                    // Swap the tiles
+                    swap(currentmove.column1, currentmove.row1, currentmove.column2, currentmove.row2);                   
+                    // Check if the swap made a cluster
+                    findClusters();
+                    if (clusters.length > 0) {
+                        // Valid swap, found one or more clusters
+                        // Prepare animation states
+                        animationstate = 0;
+                        animationtime = 0;
+                        gamestate = gamestates.resolve;
+                    } else {
+                        // Invalid swap, Rewind swapping animation
+                        animationstate = 3;
+                        animationtime = 0;
+                    }                  
+                    // Update moves and clusters
+                    findMoves();
+                    findClusters();
+                }
+            } else if (animationstate == 3) {
+                // Rewind swapping animation
+                if (animationtime > animationtimetotal) {
+                    // Invalid swap, swap back
+                    swap(currentmove.column1, currentmove.row1, currentmove.column2, currentmove.row2);                   
+                    // Animation complete
+                    gamestate = gamestates.ready;
+                }
+            }            
+            // Update moves and clusters
+            findMoves();
+            findClusters();
+        }		
+    }           
+    function drawCenterText(text, x, y, width) {// Draw text that is centered
+        var textdim = context.measureText(text);
+        context.fillText(text, x + (width-textdim.width)/2, y);
+    }     
+    function render() {// Render the game
+        // Draw the frame
+        drawFrame();      
+        // Draw score
+        context.fillStyle = "#000000";
+        context.font = "24px Verdana";
+        drawCenterText("Score:", 30, level.y+40, 150);
+        drawCenterText(score, 30, level.y+70, 150);      
+		// Draw Time
+		context.fillStyle = "#000000";
+        context.font = "24px Verdana";
+        drawCenterText("TimeLeft :", 30, level.y+120, 150);
+        drawCenterText(timeleft +" (s)", 30, level.y+150, 150);		
+        // Draw buttons
+        drawButtons();       
+        // Draw level background
+        var levelwidth = level.columns * level.tilewidth;
+        var levelheight = level.rows * level.tileheight;
+        context.fillStyle = "#000000"; //black
+        context.fillRect(level.x - 5, level.y - 5, levelwidth + 10, levelheight + 10);       
+        // Render tiles
+        renderTiles();      
+        if (nomove) { 			
+			context.fillStyle = "rgba(255, 255, 255, 0.8)";//r,g,b,transparency
+            context.fillRect(level.x, level.y, levelwidth, levelheight);           
+            context.fillStyle = "#FF0A82";
+            context.font = "24px Verdana";			
+            drawCenterText("NO More Move!", level.x, level.y + levelheight / 2 -10, levelwidth);
+			drawCenterText("+ "+level.rows*50+" Bonus points!", level.x, level.y + levelheight / 2 +30, levelwidth);
+			setTimeout(function(){ refresh();score+=level.rows}, 817);	//*50times				
+		}
+        // Game Over overlay
+        if (gameover) {
+			clearInterval(timer);
+            context.fillStyle = "rgba(0, 0, 0, 0.8)";//r,g,b,transparency
+            context.fillRect(level.x, level.y, levelwidth, levelheight);           
+            context.fillStyle = "#ffffff";
+            context.font = "24px Verdana";
+            drawCenterText("Game Over!", level.x, level.y + levelheight / 2 + 10, levelwidth);
+        }
+    }    
+    function drawFrame() {// Draw a frame with a border
+        // Draw background and a border
+        context.fillStyle = "#d0d0d0";//border
+        context.fillRect(0, 0, canvas.width, canvas.height);
+        context.fillStyle = "#E2D2F2";//canvas
+        context.fillRect(1, 1, canvas.width-2, canvas.height-2);       
+        // Draw header
+        context.fillStyle = "#D0C0E0";
+        context.fillRect(0, 0, canvas.width, 65);       
+        // Draw title
+        context.fillStyle = "#000000";
+        context.font = "24px Verdana";
+        context.fillText("The Gems - JewelStorm 1.0beta", 10, 30);              
+    }    
+    function drawButtons() {  // Draw buttons
+        for (var i=0; i<buttons.length; i++) {
+            // Draw button shape
+            context.fillStyle = "#000000";
+            context.fillRect(buttons[i].x, buttons[i].y, buttons[i].width, buttons[i].height);           
+            // Draw button text
+            context.fillStyle = "#ffffff";
+            context.font = "18px Verdana";
+            var textdim = context.measureText(buttons[i].text);
+            context.fillText(buttons[i].text, buttons[i].x + (buttons[i].width-textdim.width)/2, buttons[i].y+30);
+        }
+    }   
+    function renderTiles() {   // Render tiles
+        for (var i=0; i<level.columns; i++) {
+            for (var j=0; j<level.rows; j++) {
+                // Get the shift of the tile for animation
+                var shift = level.tiles[i][j].shift;                
+                // Calculate the tile coordinates
+                var coord = getTileCoordinate(i, j, 0, (animationtime / animationtimetotal) * shift);               
+                // Check if there is a tile present
+                if (level.tiles[i][j].type >= 0) {
+                    // Get the color of the tile
+                    var col = jewel[level.tiles[i][j].type];
+                    
+                    // Draw the tile using the color
+                    //drawTile(coord.tilex, coord.tiley, col[0], col[1], col[2]);
+					drawImage(img,coord.tilex, coord.tiley, col[0], col[1], col[2], col[3]);
+                }               
+                // Draw the selected tile
+                if (level.selectedtile.selected) {
+                    if (level.selectedtile.column == i && level.selectedtile.row == j) {
+                        // Draw a larger jewel image of the selected tile
+						var col = jewel[level.tiles[level.selectedtile.column][level.selectedtile.row].type];
+						context.drawImage(img,col[0], col[1],col[2], col[3],coord.tilex, coord.tiley,level.tilewidth, level.tileheight);
+                    }
+                }
+            }
+        }        
+        // Render the swap animation
+        if (gamestate == gamestates.resolve && (animationstate == 2 || animationstate == 3)) {
+            // Calculate the x and y shift
+            var shiftx = currentmove.column2 - currentmove.column1;
+            var shifty = currentmove.row2 - currentmove.row1;
+            // First tile
+            var coord1 = getTileCoordinate(currentmove.column1, currentmove.row1, 0, 0);
+            var coord1shift = getTileCoordinate(currentmove.column1, currentmove.row1, (animationtime / animationtimetotal) * shiftx, (animationtime / animationtimetotal) * shifty);
+            var col1 = jewel[level.tiles[currentmove.column1][currentmove.row1].type];           
+            // Second tile
+            var coord2 = getTileCoordinate(currentmove.column2, currentmove.row2, 0, 0);
+            var coord2shift = getTileCoordinate(currentmove.column2, currentmove.row2, (animationtime / animationtimetotal) * -shiftx, (animationtime / animationtimetotal) * -shifty);
+            var col2 = jewel[level.tiles[currentmove.column2][currentmove.row2].type];           
+            // Draw a black background
+            drawTile(coord1.tilex, coord1.tiley, 0, 0, 0);
+            drawTile(coord2.tilex, coord2.tiley, 0, 0, 0);            
+            // Change the order, depending on the animation state
+            if (animationstate == 2) {
+			   drawImage(img,coord1shift.tilex, coord1shift.tiley, col1[0], col1[1], col1[2], col1[3])
+			   drawImage(img,coord2shift.tilex, coord2shift.tiley, col2[0], col2[1], col2[2], col2[3])
+            } else {
+				drawImage(img,coord2shift.tilex, coord2shift.tiley, col2[0], col2[1], col2[2], col2[3])
+				drawImage(img,coord1shift.tilex, coord1shift.tiley, col1[0], col1[1], col1[2], col1[3])
+            }
+        }
+    }       
+    function getTileCoordinate(column, row, columnoffset, rowoffset) {// Get the tile coordinate
+        var tilex = level.x + (column + columnoffset) * level.tilewidth;
+        var tiley = level.y + (row + rowoffset) * level.tileheight;
+        return { tilex: tilex, tiley: tiley};
+    }   
+	function drawImage(img,x,y,cutx,cuty,w,h){//drawImage
+		context.drawImage(img,cutx,cuty,w,h,x+2,y+2,level.tilewidth - 4, level.tileheight - 4);
+	}   
+    function drawTile(x, y, r, g, b) {	// Draw a tile with a color
+        context.fillStyle = "rgb(" + r + "," + g + "," + b + ")";
+        context.fillRect(x + 2, y + 2, level.tilewidth - 4, level.tileheight - 4);
+    }      
+    function newGame() {// Start a new game
+	refresh();	
+        // Reset score
+        score = 0;               
+        // Reset game over		
+        gameover = false;
+		//reset timer
+		timeleft=timelimit;
+		clearInterval(timer);
+		timer=setInterval(function(){timeleft-=1;},1000);
+    }
+	function refresh(){//Refresh tiles
+		for (var i=0; i<level.columns; i++) {
+            level.tiles[i] = [];
+            for (var j=0; j<level.rows; j++) {
+                // Define a tile type and a shift parameter for animation
+                level.tiles[i][j] = { type: 0, shift:0 }
+            }
+        }    
+		gamestate = gamestates.ready;        
+        nomove = false;
+        // Create the level
+        createLevel();        
+        // Find initial clusters and moves
+        findMoves();
+        findClusters(); 
+	}      
+    function createLevel() {// Create a random level
+        var done = false;        
+        // Keep generating levels until it is correct
+        while (!done) {       
+            // Create a level with random tiles
+            for (var i=0; i<level.columns; i++) {
+                for (var j=0; j<level.rows; j++) {
+                    level.tiles[i][j].type = getRandomTile();
+                }
+            }            
+            // Resolve the clusters
+            resolveClusters();            
+            // Check if there are valid moves
+            findMoves();           
+            // Done when there is a valid move
+            if (moves.length > 0) {
+                done = true;
+            }
+        }
+    }      
+    function getRandomTile() {// Get a random tile
+        return Math.floor(Math.random() * jewel.length);
+    }    
+    function resolveClusters() { // Remove clusters and insert tiles
+        // Check for clusters
+        findClusters();        
+        // While there are clusters left
+        while (clusters.length > 0) {
+        
+            // Remove clusters
+            removeClusters();
+            
+            // Shift tiles
+            shiftTiles();
+            
+            // Check if there are clusters left
+            findClusters();
+        }
+    }        
+    function findClusters() {// Find clusters in the level
+        // Reset clusters
+        clusters = []        
+        // Find horizontal clusters
+        for (var j=0; j<level.rows; j++) {
+            // Start with a single tile, cluster of 1
+            var matchlength = 1;
+            for (var i=0; i<level.columns; i++) {
+                var checkcluster = false;
+                
+                if (i == level.columns-1) {
+                    // Last tile
+                    checkcluster = true;
+                } else {
+                    // Check the type of the next tile
+                    if (level.tiles[i][j].type == level.tiles[i+1][j].type &&
+                        level.tiles[i][j].type != -1) {
+                        // Same type as the previous tile, increase matchlength
+                        matchlength += 1;
+                    } else {
+                        // Different type
+                        checkcluster = true;
+                    }
+                }               
+                // Check if there was a cluster
+                if (checkcluster) {
+                    if (matchlength >= 3) {
+                        // Found a horizontal cluster
+                        clusters.push({ column: i+1-matchlength, row:j,
+                                        length: matchlength, horizontal: true });
+                    }
+                    
+                    matchlength = 1;
+                }
+            }
+        }
+        // Find vertical clusters
+        for (var i=0; i<level.columns; i++) {
+            // Start with a single tile, cluster of 1
+            var matchlength = 1;
+            for (var j=0; j<level.rows; j++) {
+                var checkcluster = false;
+                
+                if (j == level.rows-1) {
+                    // Last tile
+                    checkcluster = true;
+                } else {
+                    // Check the type of the next tile
+                    if (level.tiles[i][j].type == level.tiles[i][j+1].type &&
+                        level.tiles[i][j].type != -1) {
+                        // Same type as the previous tile, increase matchlength
+                        matchlength += 1;
+                    } else {
+                        // Different type
+                        checkcluster = true;
+                    }
+                }
+                
+                // Check if there was a cluster
+                if (checkcluster) {
+                    if (matchlength >= 3) {
+                        // Found a vertical cluster
+                        clusters.push({ column: i, row:j+1-matchlength,
+                                        length: matchlength, horizontal: false });
+                    }
+                    
+                    matchlength = 1;
+                }
+            }
+        }
+    }       
+    function findMoves() {// Find available moves
+        // Reset moves
+        moves = []        
+        // Check horizontal swaps
+        for (var j=0; j<level.rows; j++) {
+            for (var i=0; i<level.columns-1; i++) {
+                // Swap, find clusters and swap back
+                swap(i, j, i+1, j);
+                findClusters();
+                swap(i, j, i+1, j);
+                
+                // Check if the swap made a cluster
+                if (clusters.length > 0) {
+                    // Found a move
+                    moves.push({column1: i, row1: j, column2: i+1, row2: j});
+                }
+            }
+        }       
+        // Check vertical swaps
+        for (var i=0; i<level.columns; i++) {
+            for (var j=0; j<level.rows-1; j++) {
+                // Swap, find clusters and swap back
+                swap(i, j, i, j+1);
+                findClusters();
+                swap(i, j, i, j+1);
+                
+                // Check if the swap made a cluster
+                if (clusters.length > 0) {
+                    // Found a move
+                    moves.push({column1: i, row1: j, column2: i, row2: j+1});
+                }
+            }
+        }        
+        // Reset clusters
+        clusters = []
+    }     
+    function loopClusters(func) {// Loop over the cluster tiles and execute a function
+        for (var i=0; i<clusters.length; i++) {
+            //  { column, row, length, horizontal }
+            var cluster = clusters[i];
+            var coffset = 0;
+            var roffset = 0;
+            for (var j=0; j<cluster.length; j++) {
+                func(i, cluster.column+coffset, cluster.row+roffset, cluster);
+                
+                if (cluster.horizontal) {
+                    coffset++;
+                } else {
+                    roffset++;
+                }
+            }
+        }
+    }   
+    function removeClusters() {// Remove the clusters		
+        // Change the type of the tiles to -1, indicating a removed tile
+        loopClusters(function(index, column, row, cluster) { level.tiles[column][row].type = -1; });
+        // Calculate how much a tile should be shifted downwards
+        for (var i=0; i<level.columns; i++) {
+            var shift = 0;
+            for (var j=level.rows-1; j>=0; j--) {
+                // Loop from bottom to top
+                if (level.tiles[i][j].type == -1) {
+                    // Tile is removed, increase shift
+                    shift++;
+                    level.tiles[i][j].shift = 0;
+                } else {
+                    // Set the shift
+                    level.tiles[i][j].shift = shift;
+                }
+            }
+        }
+    }     
+    function shiftTiles() {// Shift tiles and insert new tiles
+        // Shift tiles
+        for (var i=0; i<level.columns; i++) {
+            for (var j=level.rows-1; j>=0; j--) {
+                // Loop from bottom to top
+                if (level.tiles[i][j].type == -1) {
+                    // Insert new random tile
+                    level.tiles[i][j].type = getRandomTile();
+                } else {
+                    // Swap tile to shift it
+                    var shift = level.tiles[i][j].shift;
+                    if (shift > 0) {
+                        swap(i, j, i, j+shift)
+                    }
+                }               
+                // Reset shift
+                level.tiles[i][j].shift = 0;
+            }
+        }
+    }    
+    function getMouseTile(pos) {// Get the tile under the mouse
+        // Calculate the index of the tile
+        var tx = Math.floor((pos.x - level.x) / level.tilewidth);
+        var ty = Math.floor((pos.y - level.y) / level.tileheight);       
+        // Check if the tile is valid
+        if (tx >= 0 && tx < level.columns && ty >= 0 && ty < level.rows) {
+            // Tile is valid
+            return {
+                valid: true,
+                x: tx,
+                y: ty
+            };
+        }       
+        // No valid tile
+        return {
+            valid: false,
+            x: 0,
+            y: 0
+        };
+    }       
+    function canSwap(x1, y1, x2, y2) {// Check if two tiles can be swapped
+        // Check if the tile is a direct neighbor of the selected tile
+		if(!gameover){//Check if the game ends
+        if ((Math.abs(x1 - x2) == 1 && y1 == y2) ||
+            (Math.abs(y1 - y2) == 1 && x1 == x2)) {
+            return true;
+        }
+        }
+        return false;
+    }   
+    function swap(x1, y1, x2, y2) {// Swap two tiles in the level
+        var typeswap = level.tiles[x1][y1].type;
+        level.tiles[x1][y1].type = level.tiles[x2][y2].type;
+        level.tiles[x2][y2].type = typeswap;
+    }      
+    function mouseSwap(c1, r1, c2, r2) {// Swap two tiles as a player action
+        // Save the current move
+        currentmove = {column1: c1, row1: r1, column2: c2, row2: r2};
+    
+        // Deselect
+        level.selectedtile.selected = false;
+        
+        // Start animation
+        animationstate = 2;
+        animationtime = 0;
+        gamestate = gamestates.resolve;
+    }    
+    function onMouseDown(e) {//Button click
+        // Get the mouse position
+        var pos = getMousePos(canvas, e);       
+            // Get the tile under the mouse
+            mt = getMouseTile(pos);            
+            if (mt.valid) {
+                // Valid tile
+                var swapped = false;
+                if (level.selectedtile.selected) {
+                    if (mt.x == level.selectedtile.column && mt.y == level.selectedtile.row) {
+                        // Same tile selected, deselect
+                        level.selectedtile.selected = false;                      
+                        return;
+                    } else if (canSwap(mt.x, mt.y, level.selectedtile.column, level.selectedtile.row)){
+                        // Tiles can be swapped, swap the tiles
+                        mouseSwap(mt.x, mt.y, level.selectedtile.column, level.selectedtile.row);
+                        swapped = true;
+                    }
+                }
+                
+                if (!swapped) {
+                    // Set the new selected tile
+                    level.selectedtile.column = mt.x;
+                    level.selectedtile.row = mt.y;
+                    level.selectedtile.selected = true;
+                }
+            } else {
+                // Invalid tile
+                level.selectedtile.selected = false;
+            }         
+        // Check if a button was clicked
+        for (var i=0; i<buttons.length; i++) {
+            if (pos.x >= buttons[i].x && pos.x < buttons[i].x+buttons[i].width &&
+                pos.y >= buttons[i].y && pos.y < buttons[i].y+buttons[i].height) {              
+                // Button i was clicked
+                if (i == 0) {
+                    // New Game
+                    newGame();              
+                } else if (i == 1) {
+					switch(timelimit){
+						case 15:timelimit=30;break;
+						case 30:timelimit=60;break;
+						case 60:timelimit=90;break;
+						case 90:timelimit=120;break;
+						case 120:timelimit=15;break;
+						default: break;
+					}
+					buttons[i].text = "TimeLimit: "+timelimit+"s";					
+				}else if (i == 2){
+				clearInterval(timer);
+					if (boardsize == 6){
+						level = {
+							x: 250,         // X position
+							y: 113,         // Y position
+							columns: 8,     // Number of tile columns
+							rows: 8,        // Number of tile rows
+							tilewidth: 48,  // Visual width of a tile
+							tileheight: 48, // Visual height of a tile
+							tiles: [],      // The two-dimensional tile array
+							selectedtile: { selected: false, column: 0, row: 0 }
+						};
+						boardsize = 8;
+						}else if (boardsize == 8){
+							level = {
+							x: 250,         // X position
+							y: 113,         // Y position
+							columns: 6,     // Number of tile columns
+							rows: 6,        // Number of tile rows
+							tilewidth: 64,  // Visual width of a tile
+							tileheight: 64, // Visual height of a tile
+							tiles: [],      // The two-dimensional tile array
+							selectedtile: { selected: false, column: 0, row: 0 }
+							};
+							boardsize = 6;
+						}
+						buttons[i].text = "Difficulty: "+boardsize+"x"+boardsize;				
+				} 
+            }
+        }
+    }       
+    function getMousePos(canvas, e) {// Get the mouse position
+        var rect = canvas.getBoundingClientRect();
+        return {
+            x: Math.round((e.clientX - rect.left)/(rect.right - rect.left)*canvas.width),
+            y: Math.round((e.clientY - rect.top)/(rect.bottom - rect.top)*canvas.height)
+        };
+    }   
+    // Call main function
+    main(0);
+};
+</script>
+</head>
+<body>
+<canvas id="viewport" width="720" height="560"></canvas></div>
+</body>
+</html> 
