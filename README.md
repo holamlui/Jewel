@@ -1,8 +1,11 @@
 gems-jewel storm 1.0beta
 
+[Online Preview]
+http://htmlpreview.github.io/?https://github.com/holamlui/Jewel/blob/master/jewel.html
+
 Game Flow:
-select Difficulty,level(TimeLimit) // Default 8x8,15seconds
-press New Game
+Select Difficulty, Level(TimeLimit) // Default 8x8,15 seconds
+Press New Game
 
 How to play:
 Click a tile you want to move, then click the tile you want to swap it with
